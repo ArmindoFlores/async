@@ -10,7 +10,17 @@ void *y(void *arg) {
 void *f(void *arg) {
     int x = *(int*)arg;
     printf("Coroutine says %d!\n", x);
-    async_await(y, "Francisco");
+
+    future_t *future1 = future_create_from_function(y, "Francisco");
+    future_t *future2 = future_create_from_function(y, "Armindo");
+    future_t *all = future_all((future_t*[]){future1, future2}, 2);
+
+    async_await_future(all);
+
+    future_destroy(all);
+    future_destroy(future1);
+    future_destroy(future2);
+
     printf("Coroutine says %d!\n", x + 10);
     return (void*) 1337;
 }

@@ -2,7 +2,7 @@
 #include <stdarg.h>
 
 static const char *level_names[] = {"DEBUG", "INFO", "WARN", "ERROR"};
-static const char *level_colors[] = {"\033[36m", "\033[32m", "\033[33m", "\033[31m"};
+static const char *level_colors[] = {"\033[36m", "", "\033[33m", "\033[31m"};
 static const char *reset = "\033[0m";
 
 void _logf(int level, FILE *stream, const char *filename, int line, const char *func, const char *fmt, ...) {

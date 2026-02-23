@@ -1,4 +1,5 @@
 #include "async.h"
+#include "future.h"
 #include "logging.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -111,8 +112,12 @@ int _async_main_loop(async_context_t *ctx) {
     
             if (coro_get_state(co) == CO_FINISHED) {
                 // Coroutine has finished and can be removed from scheduled queue
-                // Its creator is responsible for destroying it with coro_destroy()
                 coro_notify_waiting(co);
+                if (!coro_is_owned(co)) {
+                    // This coroutine has no owner and must be destroyed by the async
+                    // context
+                    coro_destroy(co);
+                }
                 debugf("coroutine at %p has finished\n", co);
             } else if (coro_get_state(co) == CO_SUSPENDED) {
                 // Coroutine has yielded control but is still scheduled; place it
@@ -150,7 +155,7 @@ int _async_main_loop(async_context_t *ctx) {
 }
 
 int async_context_run(async_context_t *ctx, coroutine_function_t entrypoint, void *arg) {
-    coroutine_t *co = coro_create(entrypoint, arg);
+    coroutine_t *co = coro_create(entrypoint, arg, CORO_OPT_OWNED);
     if (coro_queue_push(&ctx->scheduled_coroutines, co)) {
         return -1;
     }
@@ -158,6 +163,10 @@ int async_context_run(async_context_t *ctx, coroutine_function_t entrypoint, voi
     int result = _async_main_loop(ctx);
     coro_destroy(co);
     return result;
+}
+
+int async_schedule_coroutine(async_context_t *ctx, coroutine_t *co) {
+    return coro_queue_push(&ctx->scheduled_coroutines, co);
 }
 
 void _async_yield(async_context_t *ctx, coroutine_t *co) {
@@ -185,7 +194,15 @@ void async_yield() {
     return _async_yield(current_async_ctx, co);
 }
 
-void* async_await(coroutine_function_t func, void *arg) {
+void* async_await_future(future_t *f) {
+    future_state_e state = future_get_state(f);
+    if (state == FUTURE_RESOLVED) {
+        return future_get_return_value(f);
+    }
+    else if (state == FUTURE_REJECTED) { 
+        return NULL;
+    }
+
     async_context_t *current_async_ctx = async_context_get_current();
     if (current_async_ctx == NULL) {
         errorf("running coroutine outside async context\n");
@@ -197,31 +214,21 @@ void* async_await(coroutine_function_t func, void *arg) {
         abort();
     }
 
-    // Create a new coroutine for the given function and add it to the
-    // scheduled queue
-    coroutine_t *new_co = coro_create(func, arg);
-    if (new_co == NULL) {
-        errorf("failed create coroutine new coroutine to await\n");
-        return NULL;
-    }
-    if (coro_queue_push(&current_async_ctx->scheduled_coroutines, new_co)) {
-        errorf("failed to add coroutine at %p to scheduled queue\n");
-        coro_destroy(new_co);
-        return NULL;
-    }
-
-    // Register `co` as waiting for `new_co`
-    if (coro_add_waiting(new_co, co) != 0) {
-        coro_destroy(new_co);
+    if (future_add_waiting(f, co) != 0) {
+        errorf("failed to add coroutine at %p to waiting list of future at %p\n", co, f);
         return NULL;
     }
 
     _async_yield(current_async_ctx, co);
-    void *result = coro_get_return_value(new_co);
-    debugf("coroutine at %p finished, back to coroutine at %p\n", new_co, co);
-    coro_destroy(new_co);
+    void *result = future_get_return_value(f);
+    debugf("future at %p resolved, back to coroutine at %p\n", f, co);
 
     return result;
+}
+
+void* async_await_function(coroutine_function_t func, void *arg) {
+    async_yield();
+    return func(arg);
 }
 
 void async_context_destroy(async_context_t *ctx) {

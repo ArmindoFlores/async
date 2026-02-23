@@ -11,15 +11,16 @@
 #endif
 
 struct coroutine {
+    int options;
+
     unsigned char *stack;
     size_t stack_size;
 
     coroutine_function_t func;
     void *arg;
 
-    coroutine_state_t state;
+    coroutine_state_e state;
     size_t waiting_on;
-    coroutine_queue_t waited_on_by;
 
     context_t ctx;
 
@@ -61,7 +62,7 @@ void coro_queue_destroy(coroutine_queue_t *queue) {
     }
 }
 
-coroutine_t* coro_create(coroutine_function_t f, void *arg) {
+coroutine_t* coro_create(coroutine_function_t f, void *arg, int options) {
     size_t stack_size = 64 * 1024;
 
     coroutine_t *co = malloc(sizeof *co);
@@ -79,8 +80,8 @@ coroutine_t* coro_create(coroutine_function_t f, void *arg) {
     co->state = CO_NEW;
     co->return_value = NULL;
     co->waiting_on = 0;
-    co->waited_on_by = (coroutine_queue_t){};
     co->ctx = (context_t){};
+    co->options = options;
 
     // Register this stack with valgrind when debugging
 #if defined DEBUGGING || defined VALGRIND
@@ -135,20 +136,6 @@ void coro_run(coroutine_t *co, context_t *from) {
     _context_switch(from, &co->ctx);
 }
 
-int coro_add_waiting(coroutine_t *waited, coroutine_t *waiting) {
-    if (coro_queue_push(&waited->waited_on_by, waiting) != 0) {
-        return -1;
-    }
-    waiting->waiting_on++;
-    return 0;
-}
-
-void coro_notify_waiting(coroutine_t *co) {
-    for (struct coroutine_queue_node *cur = co->waited_on_by.head; cur != NULL; cur = cur->next) {
-        cur->element->waiting_on--;
-    }
-}
-
 int coro_is_ready(coroutine_t *co) {
     if (co->state == CO_NEW) return 1;
     if (co->state == CO_SUSPENDED) {
@@ -157,11 +144,11 @@ int coro_is_ready(coroutine_t *co) {
     return 0;
 }
 
-coroutine_state_t coro_get_state(coroutine_t *co) {
+coroutine_state_e coro_get_state(coroutine_t *co) {
     return co->state;
 }
 
-void coro_set_state(coroutine_t *co, coroutine_state_t state) {
+void coro_set_state(coroutine_t *co, coroutine_state_e state) {
     co->state = state;
 }
 
@@ -173,6 +160,18 @@ void *coro_get_return_value(coroutine_t *co) {
     return co->return_value;
 }
 
+int coro_is_owned(coroutine_t *co) {
+    return co->options & CORO_OPT_OWNED;
+}
+
+void coro_add_waiting(coroutine_t *co) {
+    co->waiting_on++;
+}
+
+void coro_notify_waiting(coroutine_t *co) {
+    co->waiting_on--;
+}
+
 void coro_destroy(coroutine_t *co) {
     if (co) {
         // Unregister this stack with valgrind when debugging
@@ -180,7 +179,6 @@ void coro_destroy(coroutine_t *co) {
         VALGRIND_STACK_DEREGISTER(co->valgrind_stack_id);
 #endif
         free(co->stack);
-        coro_queue_destroy(&co->waited_on_by);
     }
     free(co);
 }
