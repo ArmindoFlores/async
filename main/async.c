@@ -11,8 +11,8 @@ void *f(void *arg) {
     int x = *(int*)arg;
     printf("Coroutine says %d!\n", x);
 
-    future_t *future1 = future_create_from_function(y, "Francisco");
-    future_t *future2 = future_create_from_function(y, "Armindo");
+    future_t *future1 = future_create_from_function(y, "Francisco", 0);
+    future_t *future2 = future_create_from_function(y, "Armindo", 0);
     future_t *all = future_all((future_t*[]){future1, future2}, 2);
 
     async_await_future(all);

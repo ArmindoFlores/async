@@ -57,7 +57,7 @@ void *_future_all_wrapper(void *_arg) {
     return NULL;
 }
 
-future_t *future_create_from_function(coroutine_function_t func, void *arg) {
+future_t *future_create_from_function(coroutine_function_t func, void *arg, int options) {
     async_context_t *current_async_ctx = async_context_get_current();
     if (current_async_ctx == NULL) {
         errorf("running coroutine outside async context\n");
@@ -87,29 +87,42 @@ future_t *future_create_from_function(coroutine_function_t func, void *arg) {
         .original_func = func
     };
 
-    // Create a new coroutine for the given function and add it to the
-    // scheduled queue
+    // Create a new coroutine for the given function
     coroutine_t *new_co = coro_create(_coroutine_future_wrapper, wrapper_arg, 0);
     if (new_co == NULL) {
         errorf("failed create coroutine new coroutine to await\n");
         free(result);
         return NULL;
     }
-    if (async_schedule_coroutine(current_async_ctx, new_co)) {
-        errorf("failed to add coroutine at %p to scheduled queue\n");
-        free(result);
-        coro_destroy(new_co);
-        return NULL;
+
+    // Add future coroutine to schedule if specified as eager
+    int eager = options & FUT_OPT_EAGER;
+    if (eager) {
+        if (async_schedule_coroutine(current_async_ctx, new_co)) {
+            errorf("failed to add coroutine at %p to scheduled queue\n");
+            free(result);
+            coro_destroy(new_co);
+            return NULL;
+        }
     }
 
     *result = (future_t){
         .coroutine = new_co,
         .waited_on_by = {0},
-        .state = FUTURE_PENDING,
+        .state = eager ? FUTURE_PENDING : FUTURE_NEW,
         .value = NULL
     };
 
     return result;
+}
+
+int future_start(future_t *f) {
+    async_context_t *ctx = async_context_get_current();
+    if (ctx == NULL) {
+        errorf("running coroutine outside async context\n");
+        abort();
+    }
+    return async_schedule_coroutine(ctx, f->coroutine);
 }
 
 int future_add_waiting(future_t *waited, coroutine_t *waiting) {
@@ -139,7 +152,7 @@ future_t *future_all(future_t **future_array, size_t n_members) {
         .size = n_members
     };
 
-    future_t *result = future_create_from_function(_future_all_wrapper, arg);
+    future_t *result = future_create_from_function(_future_all_wrapper, arg, 0);
     if (result == NULL) {
         free(arg);
         return NULL;

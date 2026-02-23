@@ -214,6 +214,14 @@ void* async_await_future(future_t *f) {
         abort();
     }
 
+    // If the future is not executing yet, schedule it
+    if (state == FUTURE_NEW) {
+        if (future_start(f) != 0) {
+            errorf("failed to schedule future at %p\n", f);
+            return NULL;
+        }
+    }
+
     if (future_add_waiting(f, co) != 0) {
         errorf("failed to add coroutine at %p to waiting list of future at %p\n", co, f);
         return NULL;
