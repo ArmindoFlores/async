@@ -186,6 +186,7 @@ future_t *future_create_from_function(coroutine_function_t func, void *arg, int 
 }
 
 int future_start(future_t *f) {
+    if (f->coroutine == NULL) return 0;
     return async_schedule_coroutine(f->ctx, f->coroutine);
 }
 

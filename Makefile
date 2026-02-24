@@ -1,6 +1,9 @@
 # Compiler and flags
 CC := gcc
-CFLAGS := -std=c2x -Wall -Wextra -ggdb -Iinclude -DDEBUGGING -fsanitize=undefined
+CFLAGS := -std=c2x -Wall -Wextra -Iinclude
+
+DBG_FLAGS = -Og -ggdb -DDEBUGGING -fsanitize=undefined
+RELEASE_FLAGS = -Ofast -march=native -DLOG_LEVEL=1
 
 # Directories
 SRC_DIR := src
@@ -25,12 +28,17 @@ OBJ_FILES := \
 # Executables (one per main/*.c)
 EXECUTABLES := $(patsubst $(MAIN_DIR)/%.c, %, $(MAIN_FILES))
 
-# Default target
-all: $(EXECUTABLES)
+.PHONY: debug
+debug: FLAGS = $(DBG_FLAGS)
+debug: $(EXECUTABLES)
+
+.PHONY: release
+release: FLAGS = $(RELEASE_FLAGS)
+release: $(EXECUTABLES)
 
 # Build each executable by linking main.o with the library
 %: $(MAIN_DIR)/%.c $(LIB_FILE)
-	$(CC) $(CFLAGS) $< -L$(LIB_DIR) -l$(LIB_NAME) -o $@
+	$(CC) $(CFLAGS) $(FLAGS) $< -L$(LIB_DIR) -l$(LIB_NAME) -o $@
 
 # Build the library
 $(LIB_FILE): $(OBJ_FILES) | $(LIB_DIR)
@@ -38,7 +46,7 @@ $(LIB_FILE): $(OBJ_FILES) | $(LIB_DIR)
 
 # Compile src/*.c -> build/*.o
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.[cSs] | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(FLAGS) -c $< -o $@
 
 # Ensure directories exist
 $(BUILD_DIR):
