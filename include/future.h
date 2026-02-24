@@ -33,6 +33,7 @@ void future_reject(future_t *);
 void future_set_state(future_t *, future_state_e);
 future_state_e future_get_state(future_t *f);
 future_t *future_all(future_t **future_array, size_t n_members);
+void future_all_free_result(future_all_result_t *);
 void future_destroy(future_t *);
 
 #endif

@@ -265,6 +265,12 @@ future_t *future_all(future_t **future_array, size_t n_members) {
     return result;
 }
 
+void future_all_free_result(future_all_result_t *result) {
+    if (result == NULL) return;
+    free(result->future_arr);
+    free(result);
+}
+
 void future_destroy(future_t *f) {
     if (f == NULL) return;
     _future_lock_guard_begin(f);
