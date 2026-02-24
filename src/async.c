@@ -4,8 +4,11 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <errno.h>
 #include <poll.h>
+#include <threads.h>
 
 static _Thread_local async_context_t *_async_ctx_current = NULL;
 
@@ -15,11 +18,17 @@ typedef struct pollfd_array {
     size_t capacity;
 } pollfd_array_t;
 
+struct wakeup_fds {
+    int read;
+    int write;
+};
+
 struct async_context {
     coroutine_queue_t scheduled_coroutines;
     coroutine_t *current;
 
     pollfd_array_t watched_file_descriptors;
+    struct wakeup_fds wakeup_fds;
 
     context_t scheduler_ctx;
 };
@@ -38,6 +47,27 @@ int _pollfd_array_init(pollfd_array_t *array) {
     return 0;
 }
 
+int _pollfd_array_ensure_capacity(pollfd_array_t *array, size_t capacity) {
+    if (capacity <= array->capacity) {
+        return 0;
+    }
+    array->capacity *= 2;
+    array->elements = realloc(array->elements, sizeof(struct pollfd) * array->capacity);
+    return array->elements == NULL ? -1 : 0;
+}
+
+int _pollfd_array_push(pollfd_array_t *array, int fd, short int events) {
+    if (_pollfd_array_ensure_capacity(array, array->size + 1) != 0) {
+        return -1;
+    }
+    array->elements[array->size++] = (struct pollfd){
+        .fd = fd,
+        .events = events,
+        .revents = 0
+    };
+    return 0;
+}
+
 void _pollfd_array_free(pollfd_array_t *array) {
     array->capacity = 0;
     array->size = 0;
@@ -45,15 +75,66 @@ void _pollfd_array_free(pollfd_array_t *array) {
     array->elements = NULL;
 }
 
+int _wakeup_fds_init(struct wakeup_fds *w) {
+    int fds[2];
+
+    if (pipe(fds) < 0)
+        return -1;
+
+    w->read  = fds[0];
+    w->write = fds[1];
+
+    if (fcntl(w->read, F_SETFL, O_NONBLOCK) < 0 || fcntl(w->write, F_SETFL, O_NONBLOCK) < 0) {
+        close(w->read);
+        close(w->write);
+        return -1;
+    }
+
+    return 0;
+}
+
+int _wakeup_fds_signal(struct wakeup_fds *w) {
+    ssize_t n = write(w->write, &(uint8_t){1}, 1);
+    if (n < 0) {
+        if (errno == EAGAIN)
+            return 0;  // pipe full; scheduler will wake up anyway
+        return -1;
+    }
+    return 0;
+}
+
+void _wakeup_fds_drain(struct wakeup_fds *w) {
+    uint8_t buffer[128];
+
+    while (1) {
+        ssize_t n = read(w->read, buffer, sizeof(buffer));
+        if (n <= 0)
+            break;
+    }
+}
+
+void _wakeup_fds_free(struct wakeup_fds *w) {
+    if (w->read >= 0) close(w->read);
+    if (w->write >= 0) close(w->write);
+
+    w->read  = -1;
+    w->write = -1;
+}
+
 async_context_t* async_context_create() {
     async_context_t *ctx = malloc(sizeof(async_context_t));
     if (ctx == NULL) {
+        return NULL;
+    }
+    if (_wakeup_fds_init(&ctx->wakeup_fds)) {
+        free(ctx);
         return NULL;
     }
     if (_pollfd_array_init(&ctx->watched_file_descriptors) != 0) {
         free(ctx);
         return NULL;
     }
+    _pollfd_array_push(&ctx->watched_file_descriptors, ctx->wakeup_fds.read, POLLIN);
     ctx->scheduled_coroutines.head = NULL;
     ctx->scheduled_coroutines.tail = NULL;
     return ctx;
@@ -147,6 +228,11 @@ int _async_main_loop(async_context_t *ctx) {
         if (poll_result == -1) {
             debugf("poll() returned an error: '%s'\n", strerror(errno));
         }
+        if (ctx->watched_file_descriptors.elements[0].revents & POLLIN) {
+            // ctx->watched_file_descriptors.elements[0] is guaranteed to be wakeup_fd
+            debugf("poll woken up through signal\n");
+            _wakeup_fds_drain(&ctx->wakeup_fds);
+        }
     }
 
     debugf("finished async context main loop (%p)\n", ctx);
@@ -194,7 +280,70 @@ void async_yield() {
     return _async_yield(current_async_ctx, co);
 }
 
+void async_signal_scheduler(async_context_t *ctx) {
+    if (ctx == NULL) {
+        ctx = async_context_get_current();
+    }
+    if (ctx == NULL) {
+        errorf("no async context to signal\n");
+        abort();
+    }
+    while (_wakeup_fds_signal(&ctx->wakeup_fds) != 0) {
+        errorf("failed to signal scheduler, trying again\n");
+        thrd_yield();
+    }
+}
+
+struct dispatch_thread_wrapper_arg {
+    dispatch_function_t func;
+    void *original_arg;
+    future_t *future;
+};
+
+static int _dispatch_thread_wrapper(void *_arg) {
+    struct dispatch_thread_wrapper_arg *arg = (struct dispatch_thread_wrapper_arg*) _arg;
+    future_set_state(arg->future, FUTURE_PENDING);
+    arg->func(arg->future, arg->original_arg);
+    free(arg);
+    return 0;
+}
+
+future_t *async_dispatch(dispatch_function_t f, void *arg) {
+    struct dispatch_thread_wrapper_arg *dispatch_arg = malloc(sizeof(struct dispatch_thread_wrapper_arg));
+    if (dispatch_arg == NULL) {
+        errorf("failed to allocate memory for dispatched thread arguments\n");
+        return NULL;
+    }
+
+    future_t *result = future_create(FUT_OPT_THREADED);
+    if (result == NULL) {
+        errorf("failed to allocate memory for dispatched thread future\n");
+        free(dispatch_arg);
+        return NULL;
+    }
+
+    *dispatch_arg = (struct dispatch_thread_wrapper_arg){
+        .func = f,
+        .future = result,
+        .original_arg = arg
+    };
+
+    thrd_t thread;
+    if (thrd_create(&thread, _dispatch_thread_wrapper, dispatch_arg) != thrd_success) {
+        errorf("failed to spawn thread\n");
+        free(dispatch_arg);
+        future_destroy(result);
+        return NULL;
+    }
+    if (thrd_detach(thread) != thrd_success) {
+        warnf("failed to detach thread, memory will be leaked\n");
+    }
+
+    return result;
+}
+
 void* async_await_future(future_t *f) {
+    // FIXME: race condition, need to acquire f->lock
     future_state_e state = future_get_state(f);
     if (state == FUTURE_RESOLVED) {
         return future_get_return_value(f);
@@ -228,6 +377,9 @@ void* async_await_future(future_t *f) {
     }
 
     _async_yield(current_async_ctx, co);
+    if (future_get_state(f) != FUTURE_RESOLVED) {
+        return NULL;
+    }
     void *result = future_get_return_value(f);
     debugf("future at %p resolved, back to coroutine at %p\n", f, co);
 
@@ -243,5 +395,6 @@ void async_context_destroy(async_context_t *ctx) {
     if (ctx == NULL) return;
     coro_queue_destroy(&ctx->scheduled_coroutines);
     _pollfd_array_free(&ctx->watched_file_descriptors);
+    _wakeup_fds_free(&ctx->wakeup_fds);
     free(ctx);
 }

@@ -1,6 +1,6 @@
 # Compiler and flags
 CC := gcc
-CFLAGS := -std=c2x -Wall -Wextra -ggdb -Iinclude -DDEBUGGING
+CFLAGS := -std=c2x -Wall -Wextra -ggdb -Iinclude -DDEBUGGING -fsanitize=undefined
 
 # Directories
 SRC_DIR := src

@@ -91,12 +91,12 @@ coroutine_t* coro_create(coroutine_function_t f, void *arg, int options) {
     );
 #endif
 
-    unsigned char *stack_top = co->stack + stack_size;
+    unsigned char *stack_top = co->stack + stack_size - sizeof(uintptr_t);
     uintptr_t *sp = (uintptr_t *)stack_top;
 
     // Align to 16 bytes
     sp = (uintptr_t *)((uintptr_t)sp & ~0xFUL);
-    *(--sp) = (uintptr_t) _coro_run_trampoline;
+    *sp = (uintptr_t) _coro_run_trampoline;
 
     // For the first time this coroutine runs, it should start at
     // `_coro_run_trampoline`
