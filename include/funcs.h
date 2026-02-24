@@ -10,6 +10,5 @@ typedef struct async_spawn_result {
 } async_spawn_result_t;
 
 future_t *async_spawn(const char *command);
-void async_spawn_free_result(async_spawn_result_t *);
 
 #endif

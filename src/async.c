@@ -346,7 +346,7 @@ void* async_await_future(future_t *f) {
     // FIXME: race condition, need to acquire f->lock
     future_state_e state = future_get_state(f);
     if (state == FUTURE_RESOLVED) {
-        return future_get_return_value(f);
+        return future_borrow_return_value(f);
     }
     else if (state == FUTURE_REJECTED) { 
         return NULL;
@@ -380,7 +380,7 @@ void* async_await_future(future_t *f) {
     if (future_get_state(f) != FUTURE_RESOLVED) {
         return NULL;
     }
-    void *result = future_get_return_value(f);
+    void *result = future_borrow_return_value(f);
     debugf("future at %p resolved, back to coroutine at %p\n", f, co);
 
     return result;

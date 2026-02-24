@@ -16,7 +16,8 @@ void async_spawn_free_args(struct async_spawn_args *args) {
     free(args);
 }
 
-void async_spawn_free_result(async_spawn_result_t *result) {
+void async_spawn_free_result(void *_result) {
+    async_spawn_result_t *result = (async_spawn_result_t *) _result;
     if (result == NULL) return;
     free(result->stdout);
     free(result);
@@ -105,7 +106,7 @@ void _spawn(future_t *f, void *_arg) {
     }
 
     result->stdout = buffer;
-    future_resolve(f, result);
+    future_resolve(f, result, async_spawn_free_result);
     return;
 }
 
