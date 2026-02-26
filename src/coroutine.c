@@ -1,10 +1,12 @@
 #include "coroutine.h"
-#include "async.h"
 #include "logging.h"
+#include "async.h"
+#include "dllist.h"
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <memory.h>
 
 #if defined DEBUGGING || defined VALGRIND
     #include <valgrind/valgrind.h>
@@ -20,7 +22,7 @@ struct coroutine {
     void *arg;
 
     coroutine_state_e state;
-    size_t waiting_on;
+    dllist_t *waiting_on;
 
     context_t ctx;
 
@@ -32,35 +34,6 @@ struct coroutine {
 };
 
 static void _coro_run_trampoline();
-
-int coro_queue_push(coroutine_queue_t *queue, coroutine_t *co) {
-    struct coroutine_queue_node* new_node = malloc(sizeof(struct coroutine_queue_node));
-    if (new_node == NULL) {
-        return -1;
-    }
-    new_node->element = co;
-    new_node->next = NULL;
-    new_node->previous = queue->tail;
-    if (queue->tail) {
-        queue->tail->next = new_node;
-    }
-    queue->tail = new_node;
-    if (queue->head == NULL) {
-        // This is the first node, so it is also the head
-        queue->head = new_node;
-    }
-    return 0;
-}
-
-void coro_queue_destroy(coroutine_queue_t *queue) {
-    if (queue == NULL) return;
-
-    struct coroutine_queue_node* tmp = NULL;
-    for (struct coroutine_queue_node* cur = queue->head; cur != NULL; cur = tmp) {
-        tmp = cur->next;
-        free(cur);
-    }
-}
 
 coroutine_t* coro_create(coroutine_function_t f, void *arg, int options) {
     size_t stack_size = 64 * 1024;
@@ -79,7 +52,7 @@ coroutine_t* coro_create(coroutine_function_t f, void *arg, int options) {
     co->arg = arg;
     co->state = CO_NEW;
     co->return_value = NULL;
-    co->waiting_on = 0;
+    co->waiting_on = dllist_create(free);
     co->ctx = (context_t){};
     co->options = options;
 
@@ -139,7 +112,7 @@ void coro_run(coroutine_t *co, context_t *from) {
 int coro_is_ready(coroutine_t *co) {
     if (co->state == CO_NEW) return 1;
     if (co->state == CO_SUSPENDED) {
-        return co->waiting_on == 0;
+        return dllist_is_empty(co->waiting_on);
     }
     return 0;
 }
@@ -164,21 +137,41 @@ int coro_is_owned(coroutine_t *co) {
     return co->options & CORO_OPT_OWNED;
 }
 
-void coro_add_waiting(coroutine_t *co) {
-    co->waiting_on++;
+int coro_add_waiting(coroutine_t *co, awaitable_t awaitable) {
+    awaitable_t *new_awaitable = malloc(sizeof(awaitable_t));
+    if (new_awaitable == NULL) {
+        errorf("failed to allocate memory for new awaitable\n");
+        return -1;
+    }
+    memcpy(new_awaitable, &awaitable, sizeof(awaitable_t));
+    return dllist_push_back(co->waiting_on, new_awaitable);
 }
 
-void coro_notify_waiting(coroutine_t *co) {
-    co->waiting_on--;
+int _find_awaitable(void *_value, void *_arg) {
+    awaitable_t *value = (awaitable_t*) _value, *arg = (awaitable_t*) _arg;
+    if (value->type != arg->type) return 0;
+    switch (arg->type) {
+        case AWAITABLE_TYPE_FUTURE:
+            return arg->future == value->future;
+        case AWAITABLE_TYPE_FD:
+            return arg->fd == value->fd;
+    }
+    return 0;
+}
+
+void coro_remove_waiting(coroutine_t *co, awaitable_t awaitable) {
+    dllist_element_t *element = dllist_find_by_predicate(co->waiting_on, _find_awaitable, &awaitable);
+    if (element == NULL) return;
+    dllist_remove(co->waiting_on, element);
 }
 
 void coro_destroy(coroutine_t *co) {
-    if (co) {
-        // Unregister this stack with valgrind when debugging
+    if (co == NULL) return; 
+    // Unregister this stack with valgrind when debugging
 #if defined DEBUGGING || defined VALGRIND
-        VALGRIND_STACK_DEREGISTER(co->valgrind_stack_id);
+    VALGRIND_STACK_DEREGISTER(co->valgrind_stack_id);
 #endif
-        free(co->stack);
-    }
+    dllist_destroy(co->waiting_on);
+    free(co->stack);
     free(co);
 }

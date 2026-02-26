@@ -13,16 +13,20 @@ struct future {
     void (*free_value)(void *);
 
     future_state_e state;
-    coroutine_queue_t waited_on_by;
+    dllist_t *waited_on_by;
 
     int is_taken, is_locked;
     mtx_t lock;
 };
 
+iteration_result_e _future_notify_waiting_iterator_helper(dllist_element_t *, void *value, void *awaitable) {
+    coro_remove_waiting((coroutine_t*) value, *(awaitable_t*) awaitable);
+    return ITERATION_CONTINUE;
+}
+
 void _future_notify_waiting(future_t *f) {
-    for (struct coroutine_queue_node *cur = f->waited_on_by.head; cur != NULL; cur = cur->next) {
-        coro_notify_waiting(cur->element);
-    }
+    awaitable_t awaitable = AWAITABLE_FUTURE(f);
+    dllist_iterate_with_args(f->waited_on_by, _future_notify_waiting_iterator_helper, &awaitable);
 }
 
 struct coroutine_future_wrapper_args {
@@ -130,13 +134,19 @@ future_t *future_create(int options) {
     *result = (future_t){
         .ctx = async_context_get_current(),
         .coroutine = NULL,
-        .waited_on_by = {0},
+        .waited_on_by = dllist_create(NULL),
         .state = FUTURE_NEW,
         .value = NULL,
         .free_value = NULL,
         .is_locked = thread_protected ? 1 : 0,
         .is_taken = 0
     };
+
+    if (result->waited_on_by == NULL) {
+        errorf("failed to allocate memory for a future\n");
+        free(result);        
+        return NULL;
+    }
 
     if (thread_protected) {
         if (mtx_init(&result->lock, mtx_plain) != thrd_success) {
@@ -168,9 +178,18 @@ future_t *future_create_from_function(coroutine_function_t func, void *arg, int 
         return NULL;
     }
 
+    dllist_t *waited_on_by = dllist_create(NULL);
+    if (waited_on_by == NULL) {
+        errorf("failed to allocate memory for a future\n");
+        free(result);
+        return NULL;
+    }
+
     struct coroutine_future_wrapper_args *wrapper_arg = malloc(sizeof(struct coroutine_future_wrapper_args));
     if (wrapper_arg == NULL) {
         errorf("failed to allocate memory for a future\n");
+        dllist_destroy(waited_on_by);
+        free(result);
         return NULL;
     }
 
@@ -184,6 +203,7 @@ future_t *future_create_from_function(coroutine_function_t func, void *arg, int 
     coroutine_t *new_co = coro_create(_coroutine_future_wrapper, wrapper_arg, 0);
     if (new_co == NULL) {
         errorf("failed create coroutine new coroutine to await\n");
+        dllist_destroy(waited_on_by);
         free(result);
         return NULL;
     }
@@ -193,6 +213,7 @@ future_t *future_create_from_function(coroutine_function_t func, void *arg, int 
     if (eager) {
         if (async_schedule_coroutine(current_async_ctx, new_co)) {
             errorf("failed to add coroutine at %p to scheduled queue\n");
+            dllist_destroy(waited_on_by);
             free(result);
             coro_destroy(new_co);
             return NULL;
@@ -202,7 +223,7 @@ future_t *future_create_from_function(coroutine_function_t func, void *arg, int 
     *result = (future_t){
         .ctx = current_async_ctx,
         .coroutine = new_co,
-        .waited_on_by = {0},
+        .waited_on_by = waited_on_by,
         .state = eager ? FUTURE_PENDING : FUTURE_NEW,
         .value = NULL,
         .free_value = NULL,
@@ -220,12 +241,12 @@ int future_start(future_t *f) {
 
 int future_add_waiting(future_t *waited, coroutine_t *waiting) {
     _future_lock_guard_begin(waited);
-    if (coro_queue_push(&waited->waited_on_by, waiting) != 0) {
+    if (dllist_push_back(waited->waited_on_by, waiting) != 0) {
         _future_lock_guard_end(waited);
         return -1;
     }
     _future_lock_guard_end(waited);
-    coro_add_waiting(waiting);
+    coro_add_waiting(waiting, AWAITABLE_FUTURE(waited));
     return 0;
 }
 
@@ -327,7 +348,7 @@ void future_destroy(future_t *f) {
     if (!f->is_taken && f->free_value != NULL && f->value != NULL) {
         f->free_value(f->value);
     }
-    coro_queue_destroy(&f->waited_on_by);
+    dllist_destroy(f->waited_on_by);
     if (f->is_locked) {
         mtx_destroy(&f->lock);
     }

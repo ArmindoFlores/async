@@ -2,9 +2,8 @@
 #define _H_COROUTINE_
 
 #include <stddef.h>
-
-typedef void*(*coroutine_function_t)(void*);
-typedef struct coroutine coroutine_t;
+#include "async_types.h"
+#include "awaitable.h"
 
 typedef enum coroutine_state {
     CO_NEW,
@@ -28,24 +27,11 @@ typedef enum coroutine_option {
     CORO_OPT_OWNED = 1
 } coroutine_option_e;
 
-struct coroutine_queue_node {
-    coroutine_t *element;
-    struct coroutine_queue_node *previous, *next;
-};
-
-typedef struct coroutine_queue {
-    struct coroutine_queue_node* head;
-    struct coroutine_queue_node* tail;
-} coroutine_queue_t;
-
-int coro_queue_push(coroutine_queue_t *, coroutine_t *co);
-void coro_queue_destroy(coroutine_queue_t *);
-
 extern void _context_switch(context_t *from, context_t *to);
 coroutine_t* coro_create(coroutine_function_t f, void *arg, int options);
 void coro_run(coroutine_t *, context_t *from);
-void coro_add_waiting(coroutine_t *);
-void coro_notify_waiting(coroutine_t *);
+int coro_add_waiting(coroutine_t *, awaitable_t);
+void coro_remove_waiting(coroutine_t *, awaitable_t);
 int coro_is_ready(coroutine_t *);
 coroutine_state_e coro_get_state(coroutine_t *);
 void coro_set_state(coroutine_t *, coroutine_state_e);

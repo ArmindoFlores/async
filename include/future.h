@@ -1,11 +1,9 @@
 #ifndef _H_FUTURE_
 #define _H_FUTURE_
 
-#include "coroutine.h"
+#include "dllist.h"
+#include "async_types.h"
 #include <stddef.h>
-
-typedef struct future future_t;
-typedef void (*free_function_t)(void*);
 
 typedef enum future_state {
     FUTURE_NEW,

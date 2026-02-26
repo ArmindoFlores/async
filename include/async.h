@@ -2,11 +2,8 @@
 #define _H_ASYNC_
 
 #include <stdint.h>
+#include "async_types.h"
 #include "coroutine.h"
-#include "future.h"
-
-typedef struct async_context async_context_t;
-typedef void (*dispatch_function_t)(future_t*, void *arg);
 
 async_context_t* async_context_create();
 context_t* async_context_get_stack_context(async_context_t *);

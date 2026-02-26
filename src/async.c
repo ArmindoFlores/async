@@ -24,7 +24,7 @@ struct wakeup_fds {
 };
 
 struct async_context {
-    coroutine_queue_t scheduled_coroutines;
+    dllist_t *scheduled_coroutines;
     coroutine_t *current;
 
     pollfd_array_t watched_file_descriptors;
@@ -35,6 +35,11 @@ struct async_context {
 
 struct next_coroutine_result {
     coroutine_t *co;
+};
+
+struct async_next_coroutine_iterator_helper_args {
+    dllist_element_t *element;
+    coroutine_t *coroutine;
 };
 
 int _pollfd_array_init(pollfd_array_t *array) {
@@ -126,17 +131,23 @@ async_context_t* async_context_create() {
     if (ctx == NULL) {
         return NULL;
     }
+    ctx->scheduled_coroutines = dllist_create(NULL);
+    if (ctx->scheduled_coroutines == NULL) {
+        free(ctx);
+        return NULL;
+    }
     if (_wakeup_fds_init(&ctx->wakeup_fds)) {
+        dllist_destroy(ctx->scheduled_coroutines);
         free(ctx);
         return NULL;
     }
     if (_pollfd_array_init(&ctx->watched_file_descriptors) != 0) {
+        _wakeup_fds_free(&ctx->wakeup_fds);
+        dllist_destroy(ctx->scheduled_coroutines);
         free(ctx);
         return NULL;
     }
     _pollfd_array_push(&ctx->watched_file_descriptors, ctx->wakeup_fds.read, POLLIN);
-    ctx->scheduled_coroutines.head = NULL;
-    ctx->scheduled_coroutines.tail = NULL;
     return ctx;
 }
 
@@ -152,27 +163,28 @@ context_t* async_context_get_stack_context(async_context_t *ctx) {
     return &ctx->scheduler_ctx;
 }
 
-coroutine_t* _async_next_coroutine(async_context_t *ctx) {
-    for (struct coroutine_queue_node* cur = ctx->scheduled_coroutines.head; cur != NULL; cur = cur->next) {
-        coroutine_t *co = cur->element;
-        if ((coro_get_state(co) == CO_SUSPENDED && coro_is_ready(co)) || coro_get_state(co) == CO_NEW) {
-            if (cur->previous) {
-                cur->previous->next = cur->next;
-            }
-            if (cur->next) {
-                cur->next->previous = cur->previous;
-            }
-            if (ctx->scheduled_coroutines.head == cur) {
-                ctx->scheduled_coroutines.head = cur->next;
-            }
-            if (ctx->scheduled_coroutines.tail == cur) {
-                ctx->scheduled_coroutines.tail = cur->previous;
-            }
-            free(cur);
-            return co;
-        }
+iteration_result_e _async_next_coroutine_iterator_helper(dllist_element_t *element, void *value, void *_args) {
+    struct async_next_coroutine_iterator_helper_args *args = (struct async_next_coroutine_iterator_helper_args*) _args;
+    coroutine_t *co = (coroutine_t*) value;
+    
+    if ((coro_get_state(co) == CO_SUSPENDED && coro_is_ready(co)) || coro_get_state(co) == CO_NEW) {
+        args->element = element;
+        args->coroutine = co;
+        return ITERATION_BREAK;
     }
-    return NULL;
+    return ITERATION_CONTINUE;
+}
+
+coroutine_t* _async_next_coroutine(async_context_t *ctx) {
+    struct async_next_coroutine_iterator_helper_args args = {
+        .element = NULL,
+        .coroutine = NULL
+    };
+    dllist_iterate_with_args(ctx->scheduled_coroutines, _async_next_coroutine_iterator_helper, &args);
+    if (args.element) {
+        dllist_remove(ctx->scheduled_coroutines, args.element);
+    }
+    return args.coroutine;
 }
 
 int _async_main_loop(async_context_t *ctx) {
@@ -193,7 +205,6 @@ int _async_main_loop(async_context_t *ctx) {
     
             if (coro_get_state(co) == CO_FINISHED) {
                 // Coroutine has finished and can be removed from scheduled queue
-                coro_notify_waiting(co);
                 if (!coro_is_owned(co)) {
                     // This coroutine has no owner and must be destroyed by the async
                     // context
@@ -204,7 +215,7 @@ int _async_main_loop(async_context_t *ctx) {
                 // Coroutine has yielded control but is still scheduled; place it
                 // back at the end of the queue
                 debugf("coroutine at %p has not finished, adding it to queue\n", co);
-                coro_queue_push(&ctx->scheduled_coroutines, co);
+                dllist_push_back(ctx->scheduled_coroutines, co);
             } else {
                 errorf("coroutine at %p was left in an invalid state\n", co);
                 abort();
@@ -213,7 +224,7 @@ int _async_main_loop(async_context_t *ctx) {
 
         ctx->current = NULL;
 
-        if (ctx->scheduled_coroutines.head == NULL) {
+        if (dllist_is_empty(ctx->scheduled_coroutines)) {
             // No more scheduled coroutines, stop the main loop
             debugf("no more scheduled coroutines, stopping main loop (%p)\n", ctx);
             break;
@@ -242,7 +253,7 @@ int _async_main_loop(async_context_t *ctx) {
 
 int async_context_run(async_context_t *ctx, coroutine_function_t entrypoint, void *arg) {
     coroutine_t *co = coro_create(entrypoint, arg, CORO_OPT_OWNED);
-    if (coro_queue_push(&ctx->scheduled_coroutines, co)) {
+    if (dllist_push_back(ctx->scheduled_coroutines, co)) {
         return -1;
     }
     
@@ -252,7 +263,7 @@ int async_context_run(async_context_t *ctx, coroutine_function_t entrypoint, voi
 }
 
 int async_schedule_coroutine(async_context_t *ctx, coroutine_t *co) {
-    return coro_queue_push(&ctx->scheduled_coroutines, co);
+    return dllist_push_back(ctx->scheduled_coroutines, co);
 }
 
 void _async_yield(async_context_t *ctx, coroutine_t *co) {
@@ -393,7 +404,7 @@ void* async_await_function(coroutine_function_t func, void *arg) {
 
 void async_context_destroy(async_context_t *ctx) {
     if (ctx == NULL) return;
-    coro_queue_destroy(&ctx->scheduled_coroutines);
+    dllist_destroy(ctx->scheduled_coroutines);
     _pollfd_array_free(&ctx->watched_file_descriptors);
     _wakeup_fds_free(&ctx->wakeup_fds);
     free(ctx);
