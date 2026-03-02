@@ -26,12 +26,12 @@ void *f(void *arg) {
         1
     );
 
-    future_all_result_t *results = async_await_future(all);
+    future_sized_array_t *results = async_await_future(all);
     if (results != NULL) {
         for (size_t i = 0; i < results->n; i++) {
-            infof("async_await_future[%lu] = %p\n", i, results->future_arr[i].value);
+            infof("async_await_future[%lu] = %p\n", i, results->future_arr[i]);
         }
-        async_spawn_result_t *result = results->future_arr[2].value;
+        async_spawn_result_t *result = future_borrow_return_value(results->future_arr[2]);
         infof("process exited with code %d, stdout:\n%s\n", result->status, result->stdout);
     }
 

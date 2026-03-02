@@ -12,15 +12,10 @@ typedef enum future_state {
     FUTURE_REJECTED
 } future_state_e;
 
-typedef struct future_all_result_element {
-    void *value;
-    free_function_t free_value;
-} future_all_result_element_t;
-
-typedef struct future_all_result {
+typedef struct future_sized_array {
     size_t n;
-    future_all_result_element_t *future_arr;
-} future_all_result_t;
+    future_t **future_arr;
+} future_sized_array_t;
 
 typedef enum future_option {
     FUT_OPT_EAGER = 1,
@@ -39,7 +34,6 @@ void future_reject(future_t *);
 void future_set_state(future_t *, future_state_e);
 future_state_e future_get_state(future_t *f);
 future_t *future_all(future_t **future_array, size_t n_members, int take_futures);
-void future_all_free_result(future_all_result_t *);
 void future_destroy(future_t *);
 
 #endif

@@ -55,18 +55,17 @@ void *_coroutine_future_wrapper(void *_arg) {
 struct future_all_wrapper_args {
     future_t **arr;
     size_t size;
-    int take_futures;
 };
 
 void *_future_all_wrapper(void *_arg) {
     struct future_all_wrapper_args *arg = (struct future_all_wrapper_args*) _arg;
 
-    future_all_result_t *result = malloc(sizeof(future_all_result_t));
+    future_sized_array_t *result = malloc(sizeof(future_sized_array_t));
     if (result == NULL) {
         errorf("failed to allocate memory for future_all_result_t\n");
         return NULL;
     }
-    result->future_arr = malloc(sizeof(future_all_result_element_t) * arg->size);
+    result->future_arr = malloc(sizeof(future_t*) * arg->size);
     if (result->future_arr == NULL) {
         free(result);
         errorf("failed to allocate memory for future_all_result_t\n");
@@ -76,15 +75,8 @@ void *_future_all_wrapper(void *_arg) {
 
     for (size_t i = 0; i < arg->size; i++) {
         debugf("awaiting future at %p (state=%d)\n", arg->arr[i], arg->arr[i]->state);
-        result->future_arr[i] = (future_all_result_element_t){
-            .value = async_await_future(arg->arr[i]),
-            .free_value = arg->take_futures ? future_get_free_result_func(arg->arr[i]) : NULL
-        };
-        if (arg->take_futures) {
-            // Own the value of each future so we can destroy them now
-            (void) future_take_return_value(arg->arr[i]);
-            future_destroy(arg->arr[i]);
-        }
+        async_await_future(arg->arr[i]);
+        result->future_arr[i] = arg->arr[i];
     }
 
     free(arg);
@@ -92,13 +84,18 @@ void *_future_all_wrapper(void *_arg) {
 }
 
 void _future_all_free_result(void *_result) {
-    future_all_result_t *result = (future_all_result_t *) _result;
+    future_sized_array_t *result = (future_sized_array_t *) _result;
     if (result == NULL) return;
     for (size_t i = 0; i < result->n; i++) {
-        if (result->future_arr[i].free_value == NULL) continue;
-        if (result->future_arr[i].value == NULL) continue;
-        result->future_arr[i].free_value(result->future_arr[i].value);
+        future_destroy(result->future_arr[i]);
     }
+    free(result->future_arr);
+    free(result);
+}
+
+void _future_all_free_result_simple(void *_result) {
+    future_sized_array_t *result = (future_sized_array_t *) _result;
+    if (result == NULL) return;
     free(result->future_arr);
     free(result);
 }
@@ -324,11 +321,10 @@ future_t *future_all(future_t **future_array, size_t n_members, int take_futures
     *arg = (struct future_all_wrapper_args){
         .arr = future_array,
         .size = n_members,
-        .take_futures = take_futures
     };
 
     future_t *result = future_create_from_function(_future_all_wrapper, arg, 0);
-    result->free_value = _future_all_free_result;
+    result->free_value = take_futures ? _future_all_free_result : _future_all_free_result_simple;
     if (result == NULL) {
         free(arg);
         return NULL;
