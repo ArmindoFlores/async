@@ -3,11 +3,13 @@ CC := gcc
 CFLAGS := -std=c2x -Wall -Wextra -Iinclude
 
 DBG_FLAGS = -Og -ggdb -DDEBUGGING -fsanitize=undefined
+TEST_FLAGS = -Og -DLOG_LEVEL=1 -DVALGRIND -fsanitize=undefined
 RELEASE_FLAGS = -Ofast -march=native -DLOG_LEVEL=1
 
 # Directories
 SRC_DIR := src
 MAIN_DIR := main
+TEST_DIR := tests
 BUILD_DIR := build
 LIB_DIR := lib
 
@@ -18,6 +20,7 @@ LIB_FILE := $(LIB_DIR)/lib$(LIB_NAME).a
 # Find all .c, .s, and .S files in src/ and main/
 SRC_FILES := $(wildcard $(SRC_DIR)/*.[cSs])
 MAIN_FILES := $(wildcard $(MAIN_DIR)/*.c)
+TEST_FILES := $(wildcard $(TEST_DIR)/*.c)
 
 # Convert src/*.[cSs] to build/*.o
 OBJ_FILES := \
@@ -28,6 +31,8 @@ OBJ_FILES := \
 # Executables (one per main/*.c)
 EXECUTABLES := $(patsubst $(MAIN_DIR)/%.c, %, $(MAIN_FILES))
 
+TEST_EXECUTABLES := $(patsubst $(TEST_DIR)/%.c, $(BUILD_DIR)/%, $(TEST_FILES))
+
 .PHONY: debug
 debug: FLAGS = $(DBG_FLAGS)
 debug: $(EXECUTABLES)
@@ -36,8 +41,16 @@ debug: $(EXECUTABLES)
 release: FLAGS = $(RELEASE_FLAGS)
 release: $(EXECUTABLES)
 
+.PHONY: test
+test: FLAGS = $(TEST_FLAGS)
+test: $(TEST_EXECUTABLES)
+	@./run_tests.py $(TEST_DIR) --bin $(BUILD_DIR)
+
 # Build each executable by linking main.o with the library
 %: $(MAIN_DIR)/%.c $(LIB_FILE)
+	$(CC) $(CFLAGS) $(FLAGS) $< -L$(LIB_DIR) -l$(LIB_NAME) -o $@
+
+$(BUILD_DIR)/%: $(TEST_DIR)/%.c $(LIB_FILE)
 	$(CC) $(CFLAGS) $(FLAGS) $< -L$(LIB_DIR) -l$(LIB_NAME) -o $@
 
 # Build the library
