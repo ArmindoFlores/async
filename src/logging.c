@@ -5,7 +5,7 @@ static const char *level_names[] = {"DEBUG", "INFO", "WARN", "ERROR"};
 static const char *level_colors[] = {"\033[36m", "", "\033[33m", "\033[31m"};
 static const char *reset = "\033[0m";
 
-void _logf(int level, FILE *stream, const char *filename, int line, const char *func, const char *fmt, ...) {
+__attribute__(( format(printf, 6, 7) )) void _logf(int level, FILE *stream, const char *filename, int line, const char *func, const char *fmt, ...) {
     if (level < LOG_LEVEL) return;
 
     const char *name  = level < 4 ? level_names[level]  : "UNKNOWN";

@@ -44,5 +44,5 @@
     } while (0)
 
 
-void _logf(int level, FILE *stream, const char* filename, int line, const char* func, const char* fmt, ...);
+__attribute__(( format(printf, 6, 7) )) void _logf(int level, FILE *stream, const char* filename, int line, const char* func, const char* fmt, ...);
 #endif
